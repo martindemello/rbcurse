@@ -5,7 +5,6 @@ require 'ncurses'
 require 'logger'
 require 'rbcurse'
 require 'rbcurse/rwidget'
-#require 'rbcurse/rform'
 require 'rbcurse/rtextarea'
 require 'rbcurse/rtextview'
 require 'rbcurse/rmenu'
@@ -23,6 +22,7 @@ if $0 == __FILE__
   begin
   # Initialize curses
     VER::start_ncurses  # this is initializing colors via ColorMap.setup
+    #$log = Logger.new("v#{$0}.log")
     $log = Logger.new("view.log")
     $log.level = Logger::DEBUG
 
@@ -33,9 +33,9 @@ if $0 == __FILE__
 
     catch(:close) do
       colors = Ncurses.COLORS
-      $log.debug "START #{colors} colors  ---------"
+      $log.debug "START #{colors} colors test2.rb --------- #{@window} "
       @form = Form.new @window
-      @form.window.printstring 0, 25, "Demo of Ruby Curses Widgets", $normalcolor, 'reverse'
+      @form.window.printstring 0, 30, "Demo of Ruby Curses Widgets - rbcurse", $normalcolor, 'reverse'
       r = 1; fc = 12;
       mnemonics = %w[ n l r p]
       %w[ name line regex password].each_with_index do |w,i|
@@ -66,7 +66,7 @@ if $0 == __FILE__
           row  r 
           col  1 
           width 40
-          height 10
+          height 11
 #         list mylist
           list_variable $listdata
           #selection_mode :SINGLE
@@ -79,7 +79,7 @@ if $0 == __FILE__
         end
         #listb.insert 55, "hello ruby", "so long python", "farewell java", "RIP .Net"
         #$listdata.value.insert 55, "hello ruby", "so long python", "farewell java", "RIP .Net"
-        listb.list_data_model.insert 55, "hello ruby", "so long python", "farewell java", "RIP .Net", "hi lisp", "hi perl6"
+        listb.list_data_model.insert 55, "hello ruby", "so long python", "farewell java", "RIP .Net", "hi lisp", "hi clojure"
         texta = TextArea.new @form do
           name   "mytext" 
           row  1 
@@ -108,7 +108,7 @@ if $0 == __FILE__
 #         list mylist
           list_variable cblist
           #selection_mode :SINGLE
-          title "Checklist"
+          title "CList"
           title_attrib 'reverse'
           cell_renderer RubyCurses::CheckBoxCellRenderer.new nil, {"parent" => self, "display_length"=> @width-2}
           cell_editing_allowed true
@@ -140,14 +140,14 @@ if $0 == __FILE__
           col  52 
           width 40
           height 10
-          title "README.txt"
+          title "README.mark"
           title_attrib 'bold'
           print_footer true
           footer_attrib 'bold'
         end
-        content = File.open("../README.txt","r").readlines
+        content = File.open("../README.markdown","r").readlines
         @textview.set_content content #, :WRAP_WORD
-        @textview.top_row 21
+        #@textview.top_row 21
 
         # just for demo, lets scroll the text view as we scroll this.
         listb.bind(:ENTER_ROW, @textview) { |alist, tview| tview.top_row alist.current_index }
@@ -360,13 +360,13 @@ if $0 == __FILE__
         str << " bugs as they crop up."
         testa.goto_start
         #testa.cursor_bol
-        testa.handle_key ?\C-a  # bol
+        testa.handle_key ?\C-a  # bol XXX should it be getbytes(0) now
         str.each_char {|c| testa.putch(c)}
         testa.repaint
         testa.handle_key KEY_DOWN # down
         testa.handle_key KEY_DOWN # down
         testa.handle_key KEY_DOWN # down
-        testa.handle_key ?\C-a  # bol
+        testa.handle_key ?\C-a  # bol XXX should it be getbytes(0) now
         #testa.cursor_bol
         str.each_char {|c| testa.putch(c)}
         $message.value = "Wrapping textarea"
@@ -376,7 +376,7 @@ if $0 == __FILE__
       filemenu.add(item = RubyCurses::MenuItem.new("Wrap",'W'))
       item.command(@form, texta) do |it, form, testa|  
         #testa.goto_start
-        testa.handle_key ?\C-a  # bol
+        testa.handle_key ?\C-a  # bol XXX should it be getbytes(0) now
         testa.wrap_para
         testa.repaint
         throw(:menubarclose)

@@ -112,13 +112,13 @@ module RubyCurses
       when "ok_cancel" #, "input", "list", "field_list"
         make_buttons %w[&OK &Cancel]
         # experience 2009-02-22 12:52 trapping y and n - hopefully wont cause an edit problem
-        @form.bind_key(?o){ press(?\M-o) }
-        @form.bind_key(?c){ press(?\M-c) }
+        @form.bind_key(?o){ press(?\M-o) }   # called method takes care of getbyte 1.9
+        @form.bind_key(?c){ press(?\M-c) }   # called method takes care of getbyte 1.9
       when "yes_no"
         make_buttons %w[&Yes &No]
         # experience 2009-02-22 12:52 trapping y and n - hopefully wont cause an edit problem
-        @form.bind_key(?y){ press(?\M-y) }
-        @form.bind_key(?n){ press(?\M-n) }
+        @form.bind_key(?y){ press(?\M-y) }   # called method takes care of getbyte 1.9
+        @form.bind_key(?n){ press(?\M-n) }   # called method takes care of getbyte 1.9
       when "yes_no_cancel"
         make_buttons ["&Yes", "&No", "&Cancel"]
       when "custom"
@@ -176,10 +176,11 @@ module RubyCurses
       return @selected_index
     end
     def press ch
+      ch = ch.getbyte(0) if ch.class==String ## 1.9
         case ch
         when -1
           return
-        when KEY_F1, 27, ?\C-q   
+        when KEY_F1, 27, ?\C-q.getbyte(0)   
           @selected_index = -1
           @stop = true
           return
@@ -238,6 +239,7 @@ module RubyCurses
     def print_message message=@message, row=nil
       @message_row = @message_col = 2
       display_length = @layout[:width]-8
+        $log.debug " print_message: dl:#{display_length} "
       # XXX this needs to go up and decide height of window
       if @message_height.nil?
         @message_height = (message.length/display_length)+1
@@ -264,6 +266,7 @@ module RubyCurses
       #@window.printstring( row, @message_col , message, color=$reversecolor)
       # 2008-12-30 19:45 experimenting with label so we can get justify and wrapping.
       #@window.printstring( row, @message_col , message, color=$reversecolor)
+        $log.debug " print_message: row #{row}, col #{@message_col} "
       message_label = RubyCurses::Label.new @form, {'text' => message, "name"=>"message_label","row" => row, "col" => @message_col, "display_length" => display_length,  "height" => @message_height, "attr"=>"reverse"}
 
     end

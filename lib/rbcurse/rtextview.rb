@@ -1,10 +1,15 @@
 =begin
   * Name: TextView 
-  * $Id$
   * Description   View text in this widget.
   * Author: rkumar (arunachalesha)
-TODO 
   * file created 2009-01-08 15:23  
+  * major change: 2010-02-10 19:43 simplifying the buffer stuff.
+  * FIXME : since currently paint is directly doing copywin, there are no checks
+    to prevent crashing or -1 when panning. We need to integrate it back to a call to Pad.
+  * unnecessary repainting when moving cursor, evn if no change in coords and data
+  * on reentering cursor does not go to where it last was (test2.rb) - sure it used to.
+TODO 
+   * border, and footer could be objects (classes) at some future stage.
   --------
   * License:
     Same as Ruby's License (http://www.ruby-lang.org/LICENSE.txt)
@@ -26,10 +31,10 @@ module RubyCurses
   # Intention is to be able to change content dynamically - the entire list.
   # Use set_content to set content, or just update the list attrib
   # TODO - 
-  #      - searching, goto line - DONE
+  #      - goto line - DONE
   class TextView < Widget
     include ListScrollable
-    dsl_accessor :height  # height of viewport
+    #dsl_accessor :height  # height of viewport cmmented on 2010-01-09 19:29 since widget has method
     dsl_accessor :title   # set this on top
     dsl_accessor :title_attrib   # bold, reverse, normal
     dsl_accessor :footer_attrib   # bold, reverse, normal
@@ -38,32 +43,51 @@ module RubyCurses
     attr_reader :toprow    # the toprow in the view (offsets are 0)
 #    attr_reader :prow     # the row on which cursor/focus is
     attr_reader :winrow   # the row in the viewport/window
+    # painting the footer does slow down cursor painting slightly if one is moving cursor fast
     dsl_accessor :print_footer
+    dsl_accessor :suppress_borders # added 2010-02-10 20:05 values true or false
 
-    def initialize form, config={}, &block
+    def initialize form = nil, config={}, &block
       @focusable = true
       @editable = false
-      @left_margin = 1
       @row = 0
       @col = 0
       @show_focus = false  # don't highlight row under focus
       @list = []
       super
-      @row_offset = @col_offset = 1
-      @orig_col = @col
-      # this does result in a blank line if we insert after creating. That's required at 
-      # present if we wish to only insert
-      @scrollatrow = @height-2
+      # ideally this should have been 2 to take care of borders, but that would break
+      # too much stuff !
+      @row_offset = @col_offset = 1 
+      #@scrollatrow = @height-2
       @content_rows = @list.length
-      @win = @form.window
-      #init_scrollable
-      print_borders
-      @maxlen ||= @width-2
+      @win = @graphic
+
       install_keys
       init_vars
     end
     def init_vars
       @curpos = @pcol = @toprow = @current_index = 0
+      @repaint_all=true 
+      ## 2010-02-10 20:20 RFED16 taking care if no border requested
+      @suppress_borders ||= false
+      @row_offset = @col_offset = 0 if @suppress_borders == true
+      # added 2010-02-11 15:11 RFED16 so we don't need a form.
+      @win_left = 0
+      @win_top = 0
+      $error_message_row ||= 23
+      $error_message_col ||= 1
+      # currently i scroll right only if  current line is longer than display width, i should use 
+      # longest line on screen.
+      @longest_line = 0 # the longest line printed on this page, used to determine if scrolling shd work
+
+      bind_key([?g,?g]){ goto_start } # mapping double keys like vim
+      bind_key([?',?']){ goto_last_position } # vim , goto last row position (not column)
+      bind_key(?/, :ask_search)
+      bind_key(?n, :find_more)
+      bind_key([?\C-x, ?>], :scroll_right)
+      bind_key([?\C-x, ?<], :scroll_left)
+      bind_key(?r) { getstr("Enter a word") }
+      bind_key(?m, :disp_menu)
     end
     ## 
     # send in a list
@@ -101,7 +125,7 @@ module RubyCurses
     end
     ## ---- for listscrollable ---- ##
     def scrollatrow
-      @height - 2
+      @height - 3 # trying out 2009-10-31 15:22 XXX since we seem to be printing one more line
     end
     def row_count
       @list.length
@@ -114,60 +138,61 @@ module RubyCurses
       end
       return nil
     end
+    ## returns the position where cursor was to be positioned by default
+    # It may no longer work like that. 
     def rowcol
-      #$log.debug "textarea rowcol : #{@row+@row_offset+@winrow}, #{@col+@col_offset}"
-      #return @row+@row_offset+@winrow, @col+@col_offset
-      #return @row+@row_offset+@winrow, @col+@col_offset
       return @row+@row_offset, @col+@col_offset
     end
     def wrap_text(txt, col = @maxlen)
+      col ||= @width-2
       $log.debug "inside wrap text for :#{txt}"
       txt.gsub(/(.{1,#{col}})( +|$\n?)|(.{1,#{col}})/,
                "\\1\\3\n") 
     end
+    ## print a border
+    ## Note that print_border clears the area too, so should be used sparingly.
     def print_borders
-      window = @form.window
+      $log.debug " #{@name} print_borders,  #{@graphic.name} "
       color = $datacolor
-      window.print_border @row, @col, @height, @width, color
+      @graphic.print_border @row, @col, @height-1, @width, color #, Ncurses::A_REVERSE
       print_title
-=begin
-      hline = "+%s+" % [ "-"*(width-((1)*2)) ]
-      hline2 = "|%s|" % [ " "*(width-((1)*2)) ]
-      window.printstring(row=startrow, col=startcol, hline, color)
-      print_title
-      (startrow+1).upto(startrow+height-1) do |row|
-        window.printstring( row, col=startcol, hline2, color)
-      end
-      window.printstring( startrow+height, col=startcol, hline, color)
-=end
-  
     end
     def print_title
-      @form.window.printstring( @row, @col+(@width-@title.length)/2, @title, $datacolor, @title_attrib) unless @title.nil?
+      $log.debug " print_title #{@row}, #{@col}, #{@width}  "
+      @graphic.printstring( @row, @col+(@width-@title.length)/2, @title, $datacolor, @title_attrib) unless @title.nil?
     end
     def print_foot
       @footer_attrib ||= Ncurses::A_REVERSE
       footer = "R: #{@current_index+1}, C: #{@curpos+@pcol}, #{@list.length} lines  "
-      @form.window.printstring( @row + @height, @col+2, footer, $datacolor, @footer_attrib) 
+      $log.debug " print_foot calling printstring with #{@row} + #{@height} -1, #{@col}+2"
+      @graphic.printstring( @row + @height -1 , @col+2, footer, $datacolor, @footer_attrib) 
+      @repaint_footer_required = false # 2010-01-23 22:55 
     end
     ### FOR scrollable ###
     def get_content
       @list
     end
     def get_window
-      @form.window
+      @graphic
     end
     ### FOR scrollable ###
     def repaint # textview
-      return unless @repaint_required
-      paint
-      print_foot if @print_footer
+      if @screen_buffer.nil?
+        safe_create_buffer
+        @screen_buffer.name = "Pad::TV_PAD_#{@name}" unless @screen_buffer.nil?
+        $log.debug " textview creates pad #{@screen_buffer} #{@name}"
+      end
+
+      #return unless @repaint_required # 2010-02-12 19:08  TRYING - won't let footer print for col move
+      paint if @repaint_required
+    #  raise "TV 175 graphic nil " unless @graphic
+      print_foot if @print_footer && @repaint_footer_required
+      buffer_to_window
     end
     def getvalue
       @list
     end
     # textview
-    # [ ] scroll left right DONE
     def handle_key ch
       @buffer = @list[@current_index]
       if @buffer.nil? and row_count == 0
@@ -181,64 +206,87 @@ module RubyCurses
         @curpos = @buffer.length
         set_form_col 
       end
-      #$log.debug "TV after loop : curpos #{@curpos} blen: #{@buffer.length}"
-      #pre_key
+      # We can improve later
       case ch
-      when ?\C-n
+      when ?\C-n.getbyte(0), 32
         scroll_forward
-      when ?\C-p
+      when ?\C-p.getbyte(0)
         scroll_backward
-      when ?0, ?\C-[
+      when ?\C-[.getbyte(0), ?t.getbyte(0)
         goto_start #start of buffer # cursor_start
-      when ?\C-]
+      when ?\C-].getbyte(0), ?G.getbyte(0)
         goto_end # end / bottom cursor_end
-      when KEY_UP
+      when KEY_UP, ?k.getbyte(0)
         #select_prev_row
         ret = up
         check_curpos
-        #addrowcol -1,0 if ret != -1 or @winrow != @oldwinrow                 # positions the cursor up 
-        #@form.row = @row + 1 + @winrow
-      when KEY_DOWN
+        
+      when KEY_DOWN, ?j.getbyte(0)
         ret = down
         check_curpos
-        #@form.row = @row + 1 + @winrow
-      when KEY_LEFT
+      when KEY_LEFT, ?h.getbyte(0)
         cursor_backward
-      when KEY_RIGHT
+      when KEY_RIGHT, ?l.getbyte(0)
         cursor_forward
-      when KEY_BACKSPACE, 127
+      when KEY_BACKSPACE, 127, 330
         cursor_backward
-      when 330
-        cursor_backward
-      when ?\C-a
+      when ?\C-a.getbyte(0) #, ?0.getbyte(0)
         # take care of data that exceeds maxlen by scrolling and placing cursor at start
+        @repaint_required = true if @pcol > 0 # tried other things but did not work
         set_form_col 0
         @pcol = 0
-      when ?\C-e
+      when ?\C-e.getbyte(0), ?$.getbyte(0)
         # take care of data that exceeds maxlen by scrolling and placing cursor at end
+        # This use to actually pan the screen to actual end of line, but now somewhere
+        # it only goes to end of visible screen, set_form probably does a sanity check
         blen = @buffer.rstrip.length
-          set_form_col blen
-=begin
-        if blen < @maxlen
-          set_form_col blen
-        else
-          @pcol = blen-@maxlen
-          #wrong curpos wiill be reported
-          set_form_col @maxlen-1
-        end
-=end
-        # search related added on 2009-02-15 21:36 
+        set_form_col blen
+        # search related 
       when @KEY_ASK_FIND
         ask_search
       when @KEY_FIND_MORE
         find_more
+      when ?0.getbyte(0)..?9.getbyte(0)
+        # FIXME the assumption here was that if numbers are being entered then a 0 is a number
+        # not a beg-of-line command.
+        # However, after introducing universal_argument, we can enters numbers using C-u and then press another
+        # C-u to stop. In that case a 0 should act as a command, even though multiplier has been set
+        if ch == ?0.getbyte(0) and $multiplier == 0
+          # copy of C-a - start of line
+          @repaint_required = true if @pcol > 0 # tried other things but did not work
+          set_form_col 0
+          @pcol = 0
+          return 0
+        end
+        # storing digits entered so we can multiply motion actions
+        $multiplier *= 10 ; $multiplier += (ch-48)
+        return 0
+      #when ?\C-u.getbyte(0)
+        ## multiplier. Series is 4 16 64
+        #@multiplier = (@multiplier == 0 ? 4 : @multiplier *= 4)
+        #return 0
+      when ?\M-l.getbyte(0) # just added 2010-03-05 not perfect
+        scroll_right # scroll data horizontally 
+      when ?\M-h.getbyte(0)
+        scroll_left
+      when ?\C-c.getbyte(0)
+        $multiplier = 0
+        return 0
       else
-        #$log.debug("TEXTVIEW XXX ch #{ch}")
-        return :UNHANDLED
+        # check for bindings, these cannot override above keys since placed at end
+        begin
+          ret = process_key ch, self
+        rescue => err
+          $error_message = err
+          @form.window.print_error_message
+          $log.error " TEXTVIEW ERROR #{err} "
+          $log.debug(err.backtrace.join("\n"))
+        end
+        return :UNHANDLED if ret == :UNHANDLED
       end
-      #post_key
-      # XXX 2008-11-27 13:57 trying out
+      $multiplier = 0 # you must reset if you've handled a key. if unhandled, don't reset since parent could use
       set_form_row
+      return 0 # added 2010-01-12 22:17 else down arrow was going into next field
     end
     # newly added to check curpos when moving up or down
     def check_curpos
@@ -247,11 +295,12 @@ module RubyCurses
       if @pcol+@curpos > @buffer.length
         addcol((@pcol+@buffer.length-@curpos)+1)
         @curpos = @buffer.length 
+        maxlen = (@maxlen || @width-2)
 
         # even this row is gt maxlen, i.e., scrolled right
-        if @curpos > @maxlen
-          @pcol = @curpos - @maxlen
-          @curpos = @maxlen-1 
+        if @curpos > maxlen
+          @pcol = @curpos - maxlen
+          @curpos = maxlen-1 
         else
           # this row is within maxlen, make scroll 0
           @pcol=0
@@ -260,46 +309,71 @@ module RubyCurses
       end
     end
     # set cursor on correct column tview
-    def set_form_col col=@curpos
-      @curpos = col
-      #@curpos = @maxlen if @curpos > @maxlen
-      if @curpos > @maxlen
-        @pcol = @curpos - @maxlen
-        @curpos = @maxlen - 1
+    def set_form_col col1=@curpos
+      @cols_panned ||= 0
+      @pad_offset ||= 0 # added 2010-02-11 21:54 since padded widgets get an offset.
+      @curpos = col1
+      maxlen = @maxlen || @width-2
+      #@curpos = maxlen if @curpos > maxlen
+      if @curpos > maxlen
+        @pcol = @curpos - maxlen
+        @curpos = maxlen - 1
+        @repaint_required = true # this is required so C-e can pan screen
       else
         @pcol = 0
       end
-      @form.col = @orig_col + @col_offset + @curpos
-      @repaint_required = true
+      # the rest only determines cursor placement
+      win_col = 0 # 2010-02-07 23:19 new cursor stuff
+      col2 = win_col + @col + @col_offset + @curpos + @cols_panned + @pad_offset
+      $log.debug "TV SFC #{@name} setting c to #{col2} #{win_col} #{@col} #{@col_offset} #{@curpos} "
+      #@form.setrowcol @form.row, col
+      setrowcol nil, col2
+      @repaint_footer_required = true
     end
     def cursor_forward
-      if @curpos < @width and @curpos < @maxlen-1 # else it will do out of box
+      maxlen = @maxlen || @width-2
+      repeatm { 
+      if @curpos < @width and @curpos < maxlen-1 # else it will do out of box
         @curpos += 1
         addcol 1
       else
-        # XXX 2008-11-26 23:03 trying out
         @pcol += 1 if @pcol <= @buffer.length
       end
+      }
       set_form_col 
-      @repaint_required = true
+      #@repaint_required = true
+      @repaint_footer_required = true # 2010-01-23 22:41 
     end
     def addcol num
-      @repaint_required = true
-      @form.addcol num
+      #@repaint_required = true
+      @repaint_footer_required = true # 2010-01-23 22:41 
+      if @form
+        @form.addcol num
+      else
+        @parent_component.form.addcol num
+      end
     end
     def addrowcol row,col
-      @repaint_required = true
+      #@repaint_required = true
+      @repaint_footer_required = true # 2010-01-23 22:41 
+      if @form
       @form.addrowcol row, col
+      else
+        @parent_component.form.addrowcol num
+      end
     end
     def cursor_backward
+      repeatm { 
       if @curpos > 0
         @curpos -= 1
         set_form_col 
         #addcol -1
-      elsif @pcol > 0 # XXX added 2008-11-26 23:05 
+      elsif @pcol > 0 
         @pcol -= 1   
       end
-      @repaint_required = true
+      }
+      #@repaint_required = true
+      @repaint_footer_required = true # 2010-01-23 22:41 
     end
     # gives offset of next line, does not move
     def next_line
@@ -308,15 +382,36 @@ module RubyCurses
     def do_relative_row num
       yield @list[@current_index+num] 
     end
+
+    ## NOTE: earlier print_border was called only once in constructor, but when
+    ##+ a window is resized, and destroyed, then this was never called again, so the 
+    ##+ border would not be seen in splitpane unless the width coincided exactly with
+    ##+ what is calculated in divider_location.
     def paint
-      print_borders if @to_print_borders == 1 # do this once only, unless everything changes
+      # not sure where to put this, once for all or repeat 2010-02-11 15:06 RFED16
+      my_win = nil
+      if @form
+        my_win = @form.window
+      else
+        my_win = @target_window
+      end
+      @graphic = my_win unless @graphic
+      #$log.warn "neither form not target window given!!! TV paint 368" unless my_win
+      #raise " #{@name} neither form, nor target window given TV paint " unless my_win
+      #raise " #{@name} NO GRAPHIC set as yet                 TV paint " unless @graphic
+      @win_left = my_win.left
+      @win_top = my_win.top
+
+      print_borders if (@suppress_borders == false && @repaint_all) # do this once only, unless everything changes
       rc = row_count
-      maxlen = @maxlen ||= @width-2
+      maxlen = @maxlen || @width-2
+      $log.debug " #{@name} textview repaint width is #{@width}, height is #{@height} , maxlen #{maxlen}/ #{@maxlen}, #{@graphic.name} roff #{@row_offset} coff #{@col_offset}" 
       tm = get_content
       tr = @toprow
       acolor = get_color $datacolor
-      h = scrollatrow()
+      h = scrollatrow() 
       r,c = rowcol
+      @longest_line = @width #maxlen
       0.upto(h) do |hh|
         crow = tr+hh
         if crow < rc
@@ -327,32 +422,73 @@ module RubyCurses
             content.gsub!(/[^[:print:]]/, '')  # don't display non print characters
             if !content.nil? 
               if content.length > maxlen # only show maxlen
+                @longest_line = content.length if content.length > @longest_line
                 content = content[@pcol..@pcol+maxlen-1] 
               else
                 content = content[@pcol..-1]
               end
             end
-            #renderer = get_default_cell_renderer_for_class content.class.to_s
-            #renderer = cell_renderer()
-            #renderer.repaint @form.window, r+hh, c+(colix*11), content, focussed, selected
-            #renderer.repaint @form.window, r+hh, c, content, focussed, selected
-            @form.window.printstring  r+hh, c, "%-*s" % [@width-2,content], acolor, @attr
+            @graphic.printstring  r+hh, c, "%-*s" % [@width-2,content], acolor, @attr
             if @search_found_ix == tr+hh
               if !@find_offset.nil?
                 # handle exceed bounds, and if scrolling
                 if @find_offset1 < maxlen+@pcol and @find_offset > @pcol
-                @form.window.mvchgat(y=r+hh, x=c+@find_offset-@pcol, @find_offset1-@find_offset, Ncurses::A_NORMAL, $reversecolor, nil)
+                @graphic.mvchgat(y=r+hh, x=c+@find_offset-@pcol, @find_offset1-@find_offset, Ncurses::A_NORMAL, $reversecolor, nil)
                 end
               end
             end
 
         else
           # clear rows
-          @form.window.printstring r+hh, c, " " * (@width-2), acolor,@attr
+          @graphic.printstring r+hh, c, " " * (@width-2), acolor,@attr
         end
       end
+      show_caret_func
       @table_changed = false
       @repaint_required = false
+      @repaint_footer_required = true # 2010-01-23 22:41 
+      @buffer_modified = true # required by form to call buffer_to_screen
+      @repaint_all = false # added 2010-01-08 18:56 for redrawing everything
+
+      # 2010-02-10 22:08 RFED16
     end
+    ## this is just a test of prompting user for a string
+    #+ as an alternative to the dialog.
+    def getstr prompt, maxlen=10
+      tabc = Proc.new {|str| Dir.glob(str +"*") }
+      config={}; config[:tab_completion] = tabc
+      config[:default] = "defaulT"
+      $log.debug " inside getstr before call "
+      ret, str = rbgetstr(@form.window, @row+@height-1, @col+1, prompt, maxlen, config)
+      $log.debug " rbgetstr returned #{ret} , #{str} "
+      return "" if ret != 0
+      return str
+    end
+    # this is just a test of the simple "most" menu
+    def disp_menu
+      menu = PromptMenu.new self 
+      menu.add( menu.create_mitem( 's', "Goto start ", "Going to start", Proc.new { goto_start} ))
+      menu.add(menu.create_mitem( 'r', "scroll right", "I have scrolled ", :scroll_right ))
+      menu.add(menu.create_mitem( 'l', "scroll left", "I have scrolled ", :scroll_left ))
+      item = menu.create_mitem( 'm', "submenu", "submenu options" )
+      menu1 = PromptMenu.new( self, "Submenu Options")
+      menu1.add(menu1.create_mitem( 's', "CASE sensitive", "Ignoring Case in search" ))
+      menu1.add(menu1.create_mitem( 't', "goto last position", "moved to previous position", Proc.new { goto_last_position} ))
+      item.action = menu1
+      menu.add(item)
+      # how do i know what's available. the application or window should know where to place
+      #menu.display @form.window, 23, 1, $datacolor #, menu
+      menu.display @form.window, $error_message_row, $error_message_col, $datacolor #, menu
+    end
+    ##
+    # dynamically load a module and execute init method.
+    # Hopefully, we can get behavior like this such as vieditable or multibuffers
+    def load_module requirename, includename
+      require "rbcurse/#{requirename}"
+      extend Object.const_get("#{includename}")
+      send("#{requirename}_init") #if respond_to? "#{includename}_init"
+    end
+
   end # class textview
+
 end # modul

@@ -1,12 +1,23 @@
 =begin
   * Name: table widget
   * Description: 
-  * Author: rkumar (arunachalesha)
+  * Author: rkumar 
 
 
   TODO: NOTE: 
      A few higher level methods check for no data but lower level ones do not.
+   XXX FIXME if M-tab to exit table then editing_stopped should be called.
+             currenty valus is lost if exiting table using Mtab or M-S-tab 2009-10-06 15:10 
+   FIXME if a field is not printed since it is going out, tab still goes there, and celleditor
+   still prints there. - DONE
+   
+   FIXME Increasing a column shoud decrease others till min size but not push off.
+   Should we have a method for changing column width online that recomputes others?
+   See testtable.rb - TODO a bit later
+   FIXME - tabbing in a row, should auto scroll to columns not displayed ?
+   currently it moves to next row. (examples/sqlc.rb) - DONE
   
+  * 2010-01-18 19:54 - BUFFERING related changes.
   --------
   * Date:   2008-12-27 21:33 
   * License:
@@ -45,7 +56,6 @@ module RubyCurses
     include RubyCurses::ListSelectable
     include RubyCurses::ListKeys
 
-    dsl_accessor :height
     dsl_accessor :title
     dsl_accessor :title_attrib
     dsl_accessor :selected_color, :selected_bgcolor, :selected_attr
@@ -61,11 +71,12 @@ module RubyCurses
     # In addition, A column to be editable must either have editable as nil or true
     dsl_accessor :cell_editing_allowed # 2009-01-16 22:55 
 
-    def initialize form, config={}, &block
+    def initialize form = nil, config={}, &block
       super
       init_vars
       install_list_keys
       install_keys_bindings
+      ## create_buffer needs to move to repaint. widget needs values to use when i creates buffer in repaint.
     end
 
     def init_vars
@@ -121,7 +132,8 @@ module RubyCurses
     end
     # added 2009-01-07 13:05 so new scrollable can use
     def scrollatrow
-      @height -3
+      #@height -3
+      @height -4 # we forgot to remove 1 from height in border.
     end
 
     # 
@@ -151,17 +163,17 @@ module RubyCurses
       create_table_header
     end
     def set_model tm, tcm=nil, lsm=nil
-        table_model tm
-        if tcm.nil?
-          create_default_table_column_model
-        else
-          table_column_model tcm
-        end
-        if lsm.nil?
-          create_default_list_selection_model
-        else
-          list_selection_model lsm
-        end
+      table_model tm
+      if tcm.nil?
+        create_default_table_column_model
+      else
+        table_column_model tcm
+      end
+      if lsm.nil?
+        create_default_list_selection_model
+      else
+        list_selection_model lsm
+      end
       create_table_header
     end
 
@@ -428,6 +440,12 @@ module RubyCurses
       end
       @cell_editor = editor
       @repaint_required = true
+      # copied from rlistbox, so that editors write on parent's graphic, otherwise
+      # their screen updates get overwritten by parent. 2010-01-19 20:17 
+      if @should_create_buffer
+        $log.debug "LB #{@name} overriding editors comp with GRAPHIC #{@graphic} "
+        editor.component.override_graphic(@graphic) #  2010-01-05 00:36 TRYING OUT BUFFERED
+      end
       set_form_col 
     end
     ## Its too late to call components on_leave here
@@ -449,15 +467,15 @@ module RubyCurses
         case cname
         when 'String'
           # I do not know cell width here, you will have toset display_length NOTE
-          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 8}
+          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 8, :name => "tb_field_str"}
           @ceh['String'] = ce
           return ce
         when 'Fixnum'
-          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 5}
+          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 5, :name => "tb_field_num"}
           @ceh[cname] = ce
           return ce
         when 'Float'
-          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 5}
+          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 5, :name => "tb_field_flt"}
           @ceh[cname] = ce
           return ce
         when "Boolean" #'TrueClass', 'FalseClass'
@@ -466,7 +484,7 @@ module RubyCurses
           return ce
         else
           $log.debug " get_default_cell_editor_for_class UNKNOWN #{cname}"
-          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 6}
+          ce = RubyCurses::CellEditor.new RubyCurses::Field.new nil, {"focusable"=>false, "visible"=>false, "display_length"=> 6, :name => "tb_field_unk"}
           @ceh[cname] = ce
           return ce
         end
@@ -493,6 +511,7 @@ module RubyCurses
         ret = @cell_editor.component.handle_key(ch)
         @repaint_required = true
         $log.debug "RET #{ret} got from to cell editor"
+        #set_form_col if ret != :UNHANDLED # added 2010-01-30 20:17 CURSOR POS TABBEDPANE
         return if ret != :UNHANDLED
       end
       case ch
@@ -502,21 +521,21 @@ module RubyCurses
       when KEY_DOWN  # show previous value
         editing_stopped if @is_editing # 2009-01-16 16:06 
         next_row
-      when 27, ?\C-c:
+      when 27, ?\C-c
         editing_canceled
-      when KEY_ENTER, 10, 13:
+      when KEY_ENTER, 10, 13
         # actually it should fall through to the else
         return :UNHANDLED unless @cell_editing_allowed
         toggle_cell_editing
 
-      when @KEY_ROW_SELECTOR # ?\C-x #32:
+      when @KEY_ROW_SELECTOR # ?\C-x #32
         #add_row_selection_interval @current_index, @current_index
         toggle_row_selection @current_index #, @current_index
         @repaint_required = true
-      when ?\C-n:
+      when ?\C-n.getbyte(0)
         editing_stopped if @is_editing # 2009-01-16 16:06 
         scroll_forward
-      when ?\C-p:
+      when ?\C-p.getbyte(0)
         editing_stopped if @is_editing # 2009-01-16 16:06 
         scroll_backward
       when 48, @KEY_GOTO_TOP
@@ -537,6 +556,7 @@ module RubyCurses
         ret = process_key ch, self
         return :UNHANDLED if ret == :UNHANDLED
       end
+      return 0 # added 2010-03-14 13:27 
     end
     def editing_canceled
       return unless @cell_editing_allowed
@@ -601,37 +621,63 @@ module RubyCurses
         bounds_check
       end
     end
+    # move focus to next column
+    #  2009-10-07 12:47 behavior change. earlier this would move to next row
+    #  if focus was on last visible field. Now it scrolls so that first invisible
+    #  field becomes the first column. 
     def next_column
       v =  @current_column+1 
-      if v < @table_column_model.column_count and v <= @_last_column_print
-        $log.debug " if v < #{@table_column_model.column_count} "
-        current_column v
+      # normal situation, there is a next column go to
+      if v < @table_column_model.column_count 
+        if v <= @_last_column_print
+          $log.debug " if v < #{@table_column_model.column_count} nd lastcolprint "
+          current_column v
+        else
+          # there is a col but its not visible
+          # XXX inefficient but i scroll completely to next column (putting it at start)
+          # otherwise sometimes it was still not visible if last column
+          (v-@_first_column_print).times(){scroll_right}
+          current_column v
+          set_form_col 
+        end
+
       else
         if @current_index < row_count()-1 
           $log.debug " GOING TO NEXT ROW FROM NEXT COL : #{@current_index} : #{row_count}"
           @current_column = 0
-          @current_column = @_first_column_print # added 2009-02-17 00:01 
+          #@current_column = @_first_column_print # added 2009-02-17 00:01 
+          @_first_column_print = 0 # added 2009-10-07 11:25 
           next_row
           set_form_col
+          @repaint_required = true
+          @table_changed = true    # so columns are modified by print_header
         else
           return :UNHANDLED
         end
       end
     end
+    # move focus to previous column
+    # if you are on first column, check if scrolling required, else move up to
+    # last *visible* column of prev row
     def previous_column
       v =  @current_column-1 
       # returning unhandled so focus can go to prev field auto
       if v < @_first_column_print and @current_index <= 0
         return :UNHANDLED
       end
-      if v < @_first_column_print and @current_index >  0
-        @current_column = @table_column_model.column_count-1
-        @current_column = @_last_column_print # added 2009-02-17 00:01 
-        $log.debug " XXXXXX prev col #{@current_column}, las #{@_last_column_print}, fi: #{@_first_column_print}"
-        set_form_col
-        previous_row
+      if v < @_first_column_print
+        if v > 0
+          scroll_left
+          current_column v
+        elsif @current_index >  0
+          @current_column = @table_column_model.column_count-1
+          @current_column = @_last_column_print # added 2009-02-17 00:01 
+          $log.debug " XXXXXX prev col #{@current_column}, las #{@_last_column_print}, fi: #{@_first_column_print}"
+          set_form_col
+          previous_row
+        end
       else
-        current_column @current_column-1 
+        current_column v
       end
     end
     def goto_bottom
@@ -745,14 +791,24 @@ module RubyCurses
     end
     def set_form_row
       r,c = rowcol
+      @rows_panned ||= 0 # RFED16 2010-02-19 10:00 
+      win_row = 0
+      #win_row=@form.window.top # 2010-01-18 20:28 added
       # +1 is due to header
-      @form.row = r + (@current_index-@toprow) + 1
+      #@form.row = r + (@current_index-@toprow) + 1
+      frow = r + (@current_index-@toprow) + 1 + win_row + @rows_panned
+      setrowcol(frow, nil) # 2010-01-18 20:04 
     end
     # set cursor on correct column, widget
     def set_form_col col=@curpos
       @curpos = col
+      @cols_panned ||= 0 # RFED16 2010-02-19 10:00 
       @current_column_offset = get_column_offset 
-      @form.col = @col + @col_offset + @curpos + @current_column_offset
+      #@form.col = @col + @col_offset + @curpos + @current_column_offset
+      #win_col=@form.window.left
+      win_col = 0 # RFED16 2010-02-19 10:00 
+      fcol = @col + @col_offset + @curpos + @current_column_offset + @cols_panned + win_col
+      setrowcol(nil, fcol) # 2010-01-18 20:04 
     end
     # protected
     def get_column_offset columnid=@current_column
@@ -762,8 +818,17 @@ module RubyCurses
 
 
     def repaint
+      safe_create_buffer # moved here 2010-02-19 09:53 RFED16
       return unless @repaint_required
-      print_border @form.window if @to_print_borders == 1 # do this once only, unless everything changes
+      my_win = @form ? @form.window : @target_window
+      @graphic = my_win unless @graphic
+      #$log.warn "neither form not target window given!!! TV paint 368" unless my_win
+      raise " #{@name} neither form, nor target window given TV paint " unless my_win
+      raise " #{@name} NO GRAPHIC set as yet                 TV paint " unless @graphic
+      @win_left = my_win.left # unused remove TODO
+      @win_top = my_win.top
+
+      print_border @graphic if @to_print_borders == 1 # do this once only, unless everything changes
       return if @table_model.nil? # added 2009-02-17 12:45 
       @_first_column_print ||= 0
       cc = @table_model.column_count
@@ -797,45 +862,50 @@ module RubyCurses
             #acolumn = tcm.column(colix)
             #model_index = acolumn.model_index
             content = get_value_at(crow, colix)  # tables
-            #renderer = get_default_cell_renderer_for_class content.class.to_s
             renderer = get_cell_renderer(crow, colix)
             if renderer.nil?
               renderer = get_default_cell_renderer_for_class(content.class.to_s) if renderer.nil?
               renderer.display_length acolumn.width unless acolumn.nil?
             end
             width = renderer.display_length + @inter_column_spacing
-            #renderer.repaint @form.window, r+hh, c+(colix*11), content, focussed, selected
             acolumn.column_offset = offset
             # trying to ensure that no overprinting
-            #  $log.debug "  c+offset+width > @col+@width #{c+offset+width} > #{@col}+#{@width}"
-            #  $log.debug "  #{c}+#{offset}+#{width} > @col+@width #{c+offset+width} > #{@col}+#{@width}"
             if c+offset+width > @col+@width
               _column_scrolling = true
               @_last_column_print = colix
-              #$log.debug " TABLE BREAKING SINCE "
-              #$log.debug " if c+offset+width > @col+@width #{c+offset+width} > #{@col}+#{@width}"
-              #$log.debug " if #{c}+#{offset}+#{width} > @col+@width #{c+offset+width} > #{@col}+#{@width}"
               # experimental to print subset of last
               space_left = (@width-3)-(offset) # 3 due to boundaries
               space_left = 0 if space_left < 0
-              if content.length > space_left
+              # length bombed for trueclass 2009-10-05 19:34 
+              contentlen = content.length rescue content.to_s.length
+              #if content.length > space_left
+              if contentlen > space_left
                 clen = space_left
                 renderer.display_length clen
               else
                 clen = -1
                 renderer.display_length space_left # content.length
               end
+              # added 2009-10-05 20:29 since non strings were bombing
+              # in other cases should be just pass the content as-is. XXX
+              contenttrim = content[0..clen] rescue content # .to_s[0..clen]
               # print the inter cell padding just in case things mess up while scrolling
-              @form.window.mvprintw r+hh, c+offset-@inter_column_spacing, inter_column_padding
-              renderer.repaint @form.window, r+hh, c+offset, crow, content[0..clen], focussed, selected
+              @graphic.mvprintw r+hh, c+offset-@inter_column_spacing, inter_column_padding
+              #renderer.repaint @graphic, r+hh, c+offset, crow, content[0..clen], focussed, selected
+              #renderer.repaint @graphic, r+hh, c+offset, crow, contenttrim, focussed, selected
+              # 2009-10-05 20:35 XXX passing self so we check it doesn't print outside
+              renderer.repaint self, r+hh, c+offset, crow, contenttrim, focussed, selected
               break
             end
             # added crow on 2009-02-11 22:46 
-            renderer.repaint @form.window, r+hh, c+(offset), crow, content, focussed, selected
+            #renderer.repaint @graphic, r+hh, c+(offset), crow, content, focussed, selected
+              # 2009-10-05 20:35 XXX
+            renderer.repaint self, r+hh, c+(offset), crow, content, focussed, selected
             offset += width
           end
         else
-          @form.window.printstring r+hh, c, " " * (@width-2), acolor,@attr
+          #@graphic.printstring r+hh, c, " " * (@width-2), acolor,@attr
+          printstring r+hh, c, " " * (@width-2), acolor,@attr
           # clear rows
         end
       end
@@ -847,10 +917,30 @@ module RubyCurses
       $log.debug " _print_more_data_marker(#{rc} >= #{tr} + #{h})"
       @table_changed = false
       @repaint_required = false
+      @buffer_modified = true
+      buffer_to_window # RFED16 2010-02-19 09:55 
+    end
+    # NEW to correct overflow
+    #  2009-10-05 21:34 
+    #  when resizing columns a renderer can go outside the table bounds
+    #  so printing should be done by parent not window
+    def printstring(r,c,string, color, att)
+      # 3 is table borders
+      # if renderer trying to print outside don't let it
+      if c > @col+@width-3
+        return
+      end
+      # if date exceeds boundary truncate
+      if c+string.length > (@col+@width)-3
+        len = string.length-((c+string.length)-(@col+@width-3))
+        @graphic.printstring(r,c,string[0..len], color,att)
+      else
+        @graphic.printstring(r,c,string, color,att)
+      end
     end
     def print_border g
       return unless @table_changed
-      g.print_border @row, @col, @height, @width, $datacolor
+      g.print_border @row, @col, @height-1, @width, $datacolor
       return if @table_model.nil?
       rc = @table_model.row_count
       h = scrollatrow()
@@ -859,19 +949,21 @@ module RubyCurses
     # private
     def _print_more_data_marker tf
       marker = tf ?  Ncurses::ACS_CKBOARD : Ncurses::ACS_VLINE
-      @form.window.mvwaddch @row+@height-1, @col+@width-1, marker
+      @graphic.mvwaddch @row+@height-2, @col+@width-1, marker
       marker = @toprow > 0 ?  Ncurses::ACS_CKBOARD : Ncurses::ACS_VLINE
-      @form.window.mvwaddch @row+1, @col+@width-1, marker
+      @graphic.mvwaddch @row+1, @col+@width-1, marker
     end
     def _print_more_columns_marker tf
       marker = tf ?  Ncurses::ACS_CKBOARD : Ncurses::ACS_HLINE
-      @form.window.mvwaddch @row+@height, @col+@width-2, marker
+      @graphic.mvwaddch @row+@height-1, @col+@width-2, marker
       # show if columns to left or not
       marker = @_first_column_print > 0 ?  Ncurses::ACS_CKBOARD : Ncurses::ACS_HLINE
-      @form.window.mvwaddch @row+@height, @col+@_first_column_print+1, marker
+      @graphic.mvwaddch @row+@height-1, @col+@_first_column_print+1, marker
     end
     def print_header
       return unless @table_changed
+          $log.debug " TABLE: inside printheader 2009-10-07 11:51  DDD "
+
       r,c = rowcol
       header_model = @table_header.table_column_model
       tcm = @table_column_model ## could have been overridden, should we use this at all
@@ -897,10 +989,14 @@ module RubyCurses
                 renderer.display_length space_left
               end
               #$log.debug " TABLE BREAKING SINCE sl: #{space_left},#{crow},#{colix}: #{clen} "
-              renderer.repaint @form.window, r, c+(offset), 0, content[0..clen], false, false
+        # passing self so can prevent renderer from printing outside 2009-10-05 22:56 
+              #renderer.repaint @graphic, r, c+(offset), 0, content[0..clen], false, false
+              renderer.repaint self, r, c+(offset), 0, content[0..clen], false, false
           break
         end
-        renderer.repaint @form.window, r, c+(offset),0, content, false, false
+        # passing self so can prevent renderer from printing outside 2009-10-05 22:56 
+        #renderer.repaint @graphic, r, c+(offset),0, content, false, false
+        renderer.repaint self, r, c+(offset),0, content, false, false
         offset += width
       end
     end
@@ -953,6 +1049,7 @@ module RubyCurses
       cc = @table_model.column_count
       if @_first_column_print < cc-1
         @_first_column_print += 1
+        @_last_column_print += 1 if @_last_column_print < cc-1
         @current_column =  @_first_column_print
           set_form_col # FIXME not looking too good till key press
         @repaint_required = true
@@ -1039,6 +1136,35 @@ module RubyCurses
       end
       table_structure_changed(nil)
     end
+    def size_columns_to_fit
+      delta = @width - table_column_model().get_total_column_width()
+      tcw = table_column_model().get_total_column_width()
+
+      $log.debug "size_columns_to_fit D #{delta}, W #{@width}, TCW #{tcw}"
+      accomodate_delta(delta) if delta != 0
+      #set_width_from_preferred_widths
+    end
+    private
+    def accomodate_delta delta
+      tcm = @table_column_model
+      cc = tcm.column_count 
+      average = (delta/cc).ceil
+      total = 0
+      tcm.each do |col|
+        oldcw = col.width + average
+        next if oldcw < col.min_width or oldcw > col.max_width
+        if delta >0 
+          break if total > delta
+        else
+          break if total < delta
+        end
+        col.width oldcw
+        total += average
+      end
+      $log.debug "accomodate_delta: #{average}. #{total}"
+      table_structure_changed(nil)
+    end
+
     # ADD METHODS HERE
   end # class Table
 
@@ -1047,6 +1173,9 @@ module RubyCurses
   # TODO - can't change width beyond min and max if set
   # resizable - user  can't resize but programatically can
   # model_index
+# XXX Seems we are not using min_width and max_width.
+# min should be used for when resizing,, max should not be used. we are using width which is
+# updated as changed
   class TableColumn
     include RubyCurses::EventHandler # 2009-01-15 22:49 
     attr_reader :identifier
@@ -1056,7 +1185,8 @@ module RubyCurses
     # user may override or set for this column, else headers default will be used
     attr_accessor :header_renderer  
     dsl_property :header_value
-    dsl_property :width
+    dsl_property :width  # XXX don;t let user set width later, should be readonly
+    dsl_property :preferred_width # user should use this when requesting a change
     # some columns may not be editable. e.g in a Finder, file size or time not editable
     # whereas name is.
 
@@ -1069,8 +1199,13 @@ module RubyCurses
     dsl_accessor :edit_length # corresponds to maxlen, if not set, col width will be useda 2009-02-16 21:55 
 
 
+    # width is used as initial and preferred width. It has actual value at any time
+    # width must never be directly set, use preferred width later
     def initialize model_index, identifier, header_value, width, config={}, &block
       @width = width
+      @preferred_width = width
+      @min_width = 4
+      @max_width = 1000
       @model_index = model_index
       @identifier = identifier
       @header_value = header_value
@@ -1106,7 +1241,7 @@ module RubyCurses
       nil
     end
     def total_column_width
-      0
+      -1
     end
     def get_selection_model
       nil
@@ -1134,6 +1269,7 @@ module RubyCurses
     #  takes a column names array
     def initialize cols=[]
       @columns = []
+      @total_column_width= -1
       ##cols.each_with_index {|c, index| @columns << TableColumn.new(index, c, c, 10) }
       cols.each_with_index {|c, index| add_column(TableColumn.new(index, c, c, 10)) }
       @selected_columns = []
@@ -1162,8 +1298,16 @@ module RubyCurses
     def clear_selection
       @selected_columns = []
     end
-    def total_column_width
-      0
+    ## 
+    # added 2009-10-07 23:04 
+    def get_total_column_width
+      @total_column_width = -1 # XXX
+      if @total_column_width == -1
+        total = 0
+        each { |c| total += c.width ; $log.debug "get_total_column_width: #{c.width}"}
+        @total_column_width = total
+      end
+      return @total_column_width 
     end
     def set_selection_model lsm
       @column_selection_model = lsm
@@ -1218,6 +1362,8 @@ module RubyCurses
       end
       def get_value_at row, col
       end
+      def get_total_column_width
+      end
 =begin
       def << obj
       end
@@ -1241,8 +1387,6 @@ module RubyCurses
         @column_identifiers = colnames_array
       end
       def column_count
-        # 2010-01-12 19:44 changed count to size so it can run on 1.8.6 - thanks to Marc Rene Arns.
-        # @column_identifiers.count
         @column_identifiers.size
       end
       def row_count
@@ -1414,7 +1558,8 @@ module RubyCurses
       end
     end # class DefaultListSelectionModel
     ##
-    # 
+    # Class that manages Table's Header
+    # are we not taking events such as column added, removed ?
     class TableHeader
       attr_accessor :default_renderer
       attr_accessor :table_column_model
@@ -1427,7 +1572,14 @@ module RubyCurses
         @default_renderer = TableCellRenderer.new "", {"display_length" => 10, "justify" => :center, "color"=>"white", "bgcolor"=>"blue"}
       end
 
-    end
+      # added 2009-10-07 14:03 
+      # returns the column being resized
+      # @returns TableColumn
+      # @protected
+      def get_resizing_column
+      end
+
+    end # class TableHeader
   ##
   # When an event is fired by TableModel, contents are changed, then this object will be passed 
   # to trigger

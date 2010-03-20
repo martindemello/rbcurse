@@ -1,3 +1,12 @@
+#####################################################
+# This is a sample program demonstrating a 2 pane file explorer using
+# rbcurse's widgets.
+# I have used a listbox here, perhaps a Table would be more configurable
+# than a listbox.
+#
+# Copyright rkumar 2009, 2010 under Ruby License.
+#
+####################################################
 require 'rubygems'
 require 'ncurses'
 require 'logger'
@@ -10,6 +19,7 @@ require 'rbcurse/keylabelprinter'
 require 'rbcurse/applicationheader'
 require 'rbcurse/action'
 require 'fileutils'
+require 'yaml'  ## added for 1.9
 #$LOAD_PATH << "/Users/rahul/work/projects/rbcurse/"
 
 # TODO
@@ -160,9 +170,9 @@ class FileExplorer
   def readable_file_size(size, precision)
     case
       #when size == 1 : "1 B"
-      when size < KILO_SIZE : "%d B" % size
-      when size < MEGA_SIZE : "%.#{precision}f K" % (size / KILO_SIZE)
-      when size < GIGA_SIZE : "%.#{precision}f M" % (size / MEGA_SIZE)
+      when size < KILO_SIZE then "%d B" % size
+      when size < MEGA_SIZE then "%.#{precision}f K" % (size / KILO_SIZE)
+      when size < GIGA_SIZE then "%.#{precision}f M" % (size / MEGA_SIZE)
       else "%.#{precision}f G" % (size / GIGA_SIZE)
     end
   end
@@ -285,13 +295,13 @@ class RFe
     status_row = RubyCurses::Label.new @form, {'text' => "", :row => Ncurses.LINES-4, :col => 0, :display_length=>Ncurses.COLS-2}
     @status_row = status_row
     colb = Ncurses.COLS/2
-    ht = Ncurses.LINES - 7
+    ht = Ncurses.LINES - 5
     wid = Ncurses.COLS/2 - 0
     @trash_path = File.expand_path("~/.Trash")
     @trash_exists = File.directory? @trash_path
     $log.debug " trash_path #{@trash_path}, #{@trash_exists}"
-    @lista = FileExplorer.new @form, self, row=2, col=1, ht, wid
-    @listb = FileExplorer.new @form, self, row=2, col=colb, ht, wid
+    @lista = FileExplorer.new @form, self, row=1, col=1, ht, wid
+    @listb = FileExplorer.new @form, self, row=1, col=colb, ht, wid
 
     init_vars
   end
@@ -306,6 +316,7 @@ class RFe
       end
     end
     @config ||={}
+    @stopping = false
   end
   def save_config
     @config["last_dirs"]=[@lista.current_dir(),@listb.current_dir()]
@@ -480,7 +491,7 @@ class RFe
     @v_window.wrefresh
     Ncurses::Panel.update_panels
     begin
-    while((ch = @v_window.getchar()) != ?\C-q )
+    while((ch = @v_window.getchar()) != ?\C-q.getbyte(0) )
       break if ch == KEY_F3
       @v_form.handle_key ch
       @v_form.repaint
@@ -496,6 +507,9 @@ class RFe
     case File.extname(fp)
     when '.tgz','.gz'
       cmd = "tar -ztvf #{fp}"
+      content = %x[#{cmd}]
+    when '.zip'
+      cmd = "unzip -l #{fp}"
       content = %x[#{cmd}]
     else
       content = File.open(fp,"r").readlines
@@ -611,6 +625,9 @@ class RFe
     $log.debug " edit #{fp}"
     shell_out "/opt/local/bin/vim #{fp}"
   end
+  def stopping?
+    @stopping
+  end
   def draw_screens
     lasta = lastb = nil
     if !@config["last_dirs"].nil?
@@ -623,6 +640,26 @@ class RFe
 #    @form.bind_key(?\M-x){
 #      @current_list.mark_block
 #    }
+    # i am just testing out double key bindings
+    @form.bind_key([?\C-w,?v]){
+      @status_row.text = "got C-w, v"
+      $log.debug " Got C-w v "
+      view()
+    }
+    @form.bind_key([?\C-w,?e]){
+      @status_row.text = "got C-w, e"
+      $log.debug " Got C-w e "
+      edit()
+    }
+    # bind dd to delete file
+    # actually this should be in listbox, and we should listen for row delete and then call opt_file
+    @form.bind_key([?d,?d]){
+      opt_file 'd'
+    }
+    @form.bind_key([?q,?q]){
+      @stopping = true
+    }
+    # this won't work since the listbox will consume the d first
     @form.bind_key(?@){
       @current_list.change_dir File.expand_path("~/")
     }
@@ -633,7 +670,7 @@ class RFe
       @klp.mode :file
       @klp.repaint
       ## FIXME chr could fail !!
-      while((ch = @window.getchar()) != ?\C-c )
+      while((ch = @window.getchar()) != ?\C-c.getbyte(0) )
         if "cmdsuvrex".index(ch.chr) == nil
           Ncurses.beep
         else
@@ -648,7 +685,7 @@ class RFe
       @klp.repaint
       keys = @klp.get_current_keys
       ## FIXME chr could fail !!
-      while((ch = @window.getchar()) != ?\C-c )
+      while((ch = @window.getchar()) != ?\C-c.getbyte(0) )
         if !keys.include?(ch.chr) 
           Ncurses.beep
         else
@@ -704,7 +741,8 @@ class RFe
     @window.wrefresh
     Ncurses::Panel.update_panels
     begin
-    while((ch = @window.getchar()) != ?\C-q )
+      ## qq stops program, but only if M-v (vim mode)
+    while(!stopping? && (ch = @window.getchar()) != ?\C-q.getbyte(0) )
       s = keycode_tos ch
       status_row.text = "Pressed #{ch} , #{s}"
       @form.handle_key(ch)

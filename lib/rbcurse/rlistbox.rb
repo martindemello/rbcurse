@@ -207,7 +207,7 @@ module RubyCurses
       instance_eval &block if block_given?
       @list_config.each_pair { |k,v|  instance_variable_set("@#{k}",v) }
       @height ||= [@max_visible_items || 10, @list.length].min 
-      #$log.debug " POPUP XXX #{@max_visible_items} ll:#{@list.length} h:#{@height}"
+      $log.debug " POPUP XXX #{@max_visible_items} ll:#{@list.length} h:#{@height}"
       # get widgets absolute coords
       if !@relative_to.nil?
         layout = @relative_to.form.window.layout
@@ -232,15 +232,9 @@ module RubyCurses
       @window = VER::Window.new(@layout)
       @form = RubyCurses::Form.new @window
       @window.bkgd(Ncurses.COLOR_PAIR($reversecolor));
-      #@window.attron(Ncurses.COLOR_PAIR($reversecolor));
-      #@window.wclear
-      #@window.attroff(Ncurses.COLOR_PAIR($reversecolor));
       @window.wrefresh
       @panel = @window.panel  # useless line ?
       Ncurses::Panel.update_panels
-#     @message_row = @message_col = 2
-#     print_borders
-#     print_title
       print_input # creates the listbox
       @form.repaint
       @window.wrefresh
@@ -322,8 +316,10 @@ module RubyCurses
     def print_input
       r = c = 0
       width = @layout[:width]
+      #$log.debug " print_input POPUP ht:#{@height} lh:#{@layout[:height]} "
       height = @layout[:height]
-      height = @height
+      #height = @height # 2010-01-06 12:52 why was this overriding previous line. its one less than layout
+      # i am now using layout height since it gives a closer size to whats asked for.
       parent = @relative_to
       defaultvalue = @default_value || ""
       list = @list
@@ -345,7 +341,6 @@ module RubyCurses
           default_values default_values
           is_popup true
           #add_observer parent
-          
         end
     end
     # may need to be upgraded to new one XXX FIXME
@@ -410,6 +405,7 @@ module RubyCurses
     dsl_accessor :KEY_NEXT_SELECTION
     dsl_accessor :KEY_PREV_SELECTION
     dsl_accessor :valign  # 2009-01-17 18:32 
+    attr_accessor :one_key_selection # will pressing a single key select or not
 
     def initialize form, config={}, &block
       @focusable = true
@@ -425,8 +421,15 @@ module RubyCurses
       @row_offset = @col_offset = 1
       @content_rows = @list.length
       @selection_mode ||= 'multiple'
-      @win = @form.window
-      print_borders unless @win.nil?   # in messagebox we don;t have window as yet!
+      @win = @graphic    # 2010-01-04 12:36 BUFFERED  replace form.window with graphic
+      # moving down to repaint so that scrollpane can set should_buffered
+      # added 2010-02-17 23:05  RFED16 so we don't need a form.
+      @win_left = 0
+      @win_top = 0
+      @multiplier = 0 # multiply motion commands
+
+#x      safe_create_buffer # 2010-01-04 12:36 BUFFERED moved here 2010-01-05 18:07 
+#x      print_borders unless @win.nil?   # in messagebox we don;t have window as yet!
       # next 2 lines carry a redundancy
       select_default_values   
       # when the combo box has a certain row in focus, the popup should have the same row in focus
@@ -449,6 +452,16 @@ module RubyCurses
         @left_margin ||= @row_selected_symbol.length
       end
       @left_margin ||= 0
+      @one_key_selection ||= true
+      bind_key(?f){ ask_selection_for_char() }
+      bind_key(?\M-v){ @one_key_selection = false }
+      bind_key(?j){ next_row() }
+      bind_key(?k){ previous_row() }
+      bind_key(?G){ goto_bottom() }
+      bind_key([?g,?g]){ goto_top() }
+      bind_key(?/){ ask_search() }
+      bind_key(?n){ find_more() }
+
     end
     def install_bindings
 
@@ -470,7 +483,8 @@ module RubyCurses
     end
     # added 2009-01-07 13:05 so new scrollable can use
     def scrollatrow
-      @height - 2
+      #@height - 2
+      @height - 3 # 2010-01-04 15:30 BUFFERED HEIGHT
     end
     def list alist=nil
       return @list if alist.nil?
@@ -505,16 +519,22 @@ module RubyCurses
     end
     def print_borders
       width = @width
-      height = @height
-      window = @form.window
+      height = @height-1 # 2010-01-04 15:30 BUFFERED HEIGHT
+      window = @graphic  # 2010-01-04 12:37 BUFFERED
       startcol = @col 
       startrow = @row 
       @color_pair = get_color($datacolor)
+      #$log.debug "rlistb:  window.print_border #{startrow}, #{startcol} , #{height} , #{width} , @color_pair, @attr "
       window.print_border startrow, startcol, height, width, @color_pair, @attr
       print_title
     end
     def print_title
-      printstring(@form.window, @row, @col+(@width-@title.length)/2, @title, @color_pair, @title_attrib) unless @title.nil?
+      #printstring(@graphic, @row, @col+(@width-@title.length)/2, @title, @color_pair, @title_attrib) unless @title.nil?
+      # 2010-01-04 15:53 BUFFERED
+      # I notice that the old version would print a title that was longer than width,
+      #+ but the new version won't print anything if it exceeds width.
+      # TODO check title.length and truncate if exceeds width
+      @graphic.printstring( @row, @col+(@width-@title.length)/2, @title, @color_pair, @title_attrib) unless @title.nil?
     end
     ### START FOR scrollable ###
     def get_content
@@ -522,7 +542,7 @@ module RubyCurses
       @list_variable && @list_variable.value || @list 
     end
     def get_window
-      @form.window
+      @graphic # 2010-01-04 12:37 BUFFERED
     end
     ### END FOR scrollable ###
     # override widgets text
@@ -542,18 +562,18 @@ module RubyCurses
         previous_row
       when KEY_DOWN  # show previous value
         next_row
-      when @KEY_ROW_SELECTOR # 32:
+      when @KEY_ROW_SELECTOR # 32
         return if is_popup and @selection_mode == 'single' # not allowing select this way since there will be a difference 
         toggle_row_selection @current_index #, @current_index
         @repaint_required = true
-      when @KEY_SCROLL_FORWARD # ?\C-n:
+      when @KEY_SCROLL_FORWARD # ?\C-n
         scroll_forward
-      when @KEY_SCROLL_BACKWARD #  ?\C-p:
+      when @KEY_SCROLL_BACKWARD #  ?\C-p
         scroll_backward
-      when @KEY_GOTO_TOP # 48, ?\C-[:
+      when @KEY_GOTO_TOP # 48, ?\C-[
         # please note that C-[ gives 27, same as esc so will respond after ages
         goto_top
-      when @KEY_GOTO_BOTTOM # ?\C-]:
+      when @KEY_GOTO_BOTTOM # ?\C-]
         goto_bottom
       when @KEY_NEXT_SELECTION # ?'
         $log.debug "insdie next selection"
@@ -568,9 +588,10 @@ module RubyCurses
       when @KEY_CLEAR_SELECTION
         clear_selection #if @select_mode == 'multiple'
         @repaint_required = true
-      when 27, ?\C-c:
+      when 27, ?\C-c.getbyte(0)
         editing_canceled @current_index if @cell_editing_allowed
         cancel_block # block
+        @multiplier = 0
       when @KEY_ASK_FIND_FORWARD
       # ask_search_forward
       when @KEY_ASK_FIND_BACKWARD
@@ -585,6 +606,13 @@ module RubyCurses
         find_more
       when @KEY_BLOCK_SELECTOR
         mark_block #selection
+      when ?\C-u.getbyte(0)
+        # multiplier. Series is 4 16 64
+        @multiplier = (@multiplier == 0 ? 4 : @multiplier *= 4)
+        return 0
+      when ?\C-c.getbyte(0)
+        @multiplier = 0
+        return 0
       else
         # this has to be fixed, if compo does not handle key it has to continue into next part FIXME
         ret = :UNHANDLED # changed on 2009-01-27 13:14 not going into unhandled, tab not released
@@ -599,15 +627,37 @@ module RubyCurses
           end
         end
         if ret == :UNHANDLED
-          case ch
-          when ?A..?Z, ?a..?z
-            ret = set_selection_for_char ch.chr
+          if @one_key_selection
+            case ch
+            when ?A.getbyte(0)..?Z.getbyte(0), ?a.getbyte(0)..?z.getbyte(0), ?0.getbyte(0)..?9.getbyte(0)
+              # simple motion, key press defines motion
+              ret = set_selection_for_char ch.chr
+            else
+              ret = process_key ch, self
+              @multiplier = 0
+              return :UNHANDLED if ret == :UNHANDLED
+            end
           else
+            # no motion on single key, we can freak out like in vim, pref f <char> for set_selection
+            case ch
+            when ?0.getbyte(0)..?9.getbyte(0)
+              @multiplier *= 10 ; @multiplier += (ch-48)
+              return 0
+            end
             ret = process_key ch, self
+            @multiplier = 0
             return :UNHANDLED if ret == :UNHANDLED
           end
         end
       end
+      @multiplier = 0
+    end
+    def ask_selection_for_char
+      ch = @graphic.getch
+      if ch < 0 || ch > 255
+        return :UNHANDLED
+      end
+      ret = set_selection_for_char ch.chr
     end
     def ask_search_forward
         regex =  get_string("Enter regex to search")
@@ -684,6 +734,12 @@ module RubyCurses
       # unfortunately 2009-01-11 19:47 combo boxes editable allows changing value
       editor.prepare_editor self, row, col, value
       editor.component.curpos = 0 # reset it after search, if user scrols down
+      #editor.component.graphic = @graphic #  2010-01-05 00:36 TRYING OUT BUFFERED
+      ## override is required if the listbox uses a buffer
+      if @should_create_buffer
+        $log.debug " overriding editors comp with GRAPHIC #{@graphic} "
+        editor.component.override_graphic(@graphic) #  2010-01-05 00:36 TRYING OUT BUFFERED
+      end
       set_form_col 0 #@left_margin
 
       # set original value so we can cancel
@@ -701,6 +757,7 @@ module RubyCurses
       if @cell_editing_allowed
         if !@cell_editor.nil?
       #    $log.debug " cell editor (leave) setting value row: #{arow} val: #{@cell_editor.getvalue}"
+          $log.debug " cell editor #{@cell_editor.component.form.window} (leave) setting value row: #{arow} val: #{@cell_editor.getvalue}"
           @list[arow] = @cell_editor.getvalue #.dup 2009-01-10 21:42 boolean can't duplicate
         else
           $log.debug "CELL EDITOR WAS NIL, #{arow} "
@@ -744,7 +801,18 @@ module RubyCurses
     # processing. also, it pans the data horizontally giving the renderer
     # a section of it.
     def repaint
+      safe_create_buffer # 2010-01-04 12:36 BUFFERED moved here 2010-01-05 18:07 
       return unless @repaint_required
+      # not sure where to put this, once for all or repeat 2010-02-17 23:07 RFED16
+      my_win = @form ? @form.window : @target_window
+      @graphic = my_win unless @graphic
+      #$log.warn "neither form not target window given!!! TV paint 368" unless my_win
+      raise " #{@name} neither form, nor target window given TV paint " unless my_win
+      raise " #{@name} NO GRAPHIC set as yet                 TV paint " unless @graphic
+      @win_left = my_win.left
+      @win_top = my_win.top
+
+      $log.debug " rlistbox repaint graphic #{@graphic} "
       print_borders if @to_print_borders == 1 # do this once only, unless everything changes
       rc = row_count
       maxlen = @maxlen ||= @width-2
@@ -783,20 +851,20 @@ module RubyCurses
               else
                 selection_symbol =  @row_unselected_symbol
               end
-              @form.window.printstring r+hh, c, selection_symbol, acolor,@attr
+              @graphic.printstring r+hh, c, selection_symbol, acolor,@attr
             end
             #renderer = get_default_cell_renderer_for_class content.class.to_s
             renderer = cell_renderer()
             #renderer.show_selector @show_selector
             #renderer.row_selected_symbol @row_selected_symbol
             #renderer.left_margin @left_margin
-            #renderer.repaint @form.window, r+hh, c+(colix*11), content, focussed, selected
+            #renderer.repaint @graphic, r+hh, c+(colix*11), content, focussed, selected
             ## added crow on 2009-02-06 23:03 
             # since data is being truncated and renderer may need index
-            renderer.repaint @form.window, r+hh, c+@left_margin, crow, content, focussed, selected
+            renderer.repaint @graphic, r+hh, c+@left_margin, crow, content, focussed, selected
         else
           # clear rows
-          @form.window.printstring r+hh, c, " " * (@width-2), acolor,@attr
+          @graphic.printstring r+hh, c, " " * (@width-2), acolor,@attr
         end
       end
       if @cell_editing_allowed
@@ -804,6 +872,8 @@ module RubyCurses
       end
       @table_changed = false
       @repaint_required = false
+      @buffer_modified = true # required by form to call buffer_to_screen BUFFERED
+      buffer_to_window # RFED16 2010-02-17 23:16 
     end
     def list_data_changed
       if row_count == 0 # added on 2009-02-02 17:13 so cursor not hanging on last row which could be empty
@@ -813,9 +883,27 @@ module RubyCurses
       end
       @repaint_required = true
     end
-    def set_form_col col=0
-      super col+@left_margin
+    def set_form_col col1=0
+      # TODO BUFFERED use setrowcol @form.row, col
+      # TODO BUFFERED use cols_panned
+      @cols_panned ||= 0 # RFED16 2010-02-17 23:40 
+      # editable listboxes will involve changing cursor and the form issue
+      ## added win_col on 2010-01-04 23:28 for embedded forms BUFFERED TRYING OUT
+      #win_col=@form.window.left
+      win_col = 0 # 2010-02-17 23:19 RFED16
+      #col = win_col + @orig_col + @col_offset + @curpos + @form.cols_panned
+      col2 = win_col + @col + @col_offset + col1 + @cols_panned + @left_margin
+      $log.debug " set_form_col in rlistbox #{@col}+ left_margin #{@left_margin} ( #{col2} ) "
+      #super col+@left_margin
+      #@form.setrowcol @form.row, col2   # added 2009-12-29 18:50 BUFFERED
+      setrowcol nil, col2 # 2010-02-17 23:19 RFED16
     end
+    #def rowcol
+    ##  $log.debug "rlistbox rowcol : #{@row+@row_offset+@winrow}, #{@col+@col_offset}"
+      #win_col=@form.window.left
+      #col2 = win_col + @col + @col_offset + @form.cols_panned + @left_margin
+      #return @row+@row_offset, col2
+    #end
     # experimental selection of multiple rows via block
     # specify a block start and then a block end
     # usage: bind mark_selection to a key. It works as a toggle.
@@ -851,7 +939,31 @@ module RubyCurses
       add_row_selection_interval(lower, higher)
       @repaint_required = true
     end
+    # 2010-02-18 11:40 
+    # TRYING OUT - canceling editing if resized otherwise drawing errors can occur
+    # the earlier painted edited comp in yellow keeps showing until a key is pressed
  
+    def set_buffering params
+      super
+      ## Ensuring that changes to top get reflect in editing comp
+      #+ otherwise it raises an exception. Still the earlier cell_edit is being
+      #+ printed where it was , until a key is moved
+      # FIXME - do same for col
+      if @cell_editor
+        r,c = rowcol
+        if @cell_editor.component.row < @row_offset + @buffer_params[:screen_top]
+          @cell_editor.component.row = @row_offset +  @buffer_params[:screen_top]
+        end
+        # TODO next block to be tested by placing a listbox in right split of vertical
+        if @cell_editor.component.col < @col_offset + @buffer_params[:screen_left]
+          @cell_editor.component.col = @col_offset +  @buffer_params[:screen_left]
+        end
+        #editing_canceled @current_index if @cell_editing_allowed and @cell_editor
+      end
+      #set_form_row
+      @repaint_required = true
+    end
+
 
     # ADD HERE
   end # class listb

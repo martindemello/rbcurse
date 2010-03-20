@@ -2,14 +2,16 @@ $LOAD_PATH << "/Users/rahul/work/projects/rbcurse/"
 require 'rubygems'
 require 'ncurses'
 require 'logger'
-#require 'ver/keyboard'
 require 'rbcurse'
 require 'rbcurse/rcombo'
 require 'rbcurse/rtable'
-#require 'rbcurse/table/tablecellrenderer'
 require 'rbcurse/keylabelprinter'
 require 'rbcurse/applicationheader'
 require 'rbcurse/action'
+require 'yaml'   # 1.9 2009-10-05 13:11 
+###############################
+## THIS WONT WORK SINCE I've changed to format of yaml file to array from hash
+##############################
 
 class TodoList
   def initialize file
@@ -379,7 +381,7 @@ class TodoApp
     @window.wrefresh
     Ncurses::Panel.update_panels
     begin
-    while((ch = @window.getchar()) != ?\C-q )
+    while((ch = @window.getchar()) != ?\C-q.getbyte(0) )
       colcount = tcm.column_count-1
       s = keycode_tos ch
       #status_row.text = "Pressed #{ch} , #{s}"
