@@ -1,11 +1,11 @@
 # rbcurse (for ruby 1.9.1)
 
-#### Please go to master19 <http://github.com/rkumar/rbcurse/tree/master19> branch.
+#### Please go to master19 <http://github.com/rkumar/rbcurse/tree/master19> branch for current work.
    
-    I am having some problem with this branch after renaming/merging, I am now updating master19.
-    I keep getting a conflict if I merge here.
+I am having some problem with this branch after renaming/merging, I am now updating master19.
+I keep getting a conflict if I merge here.
     
-    
+## Warning! Achtung! This branch is obsolete    
 
 * Version to work with ruby 1.9 (backward compatible with 1.8.7)
 
